@@ -1,0 +1,88 @@
+name: Track scheduled arrival time
+
+on:
+  schedule:
+    # Every 20 minutes
+    - cron: "*/20 * * * *"
+  workflow_dispatch: {}
+
+# Allow the workflow to commit the updated state file and to disable itself.
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: track-arrival
+  cancel-in-progress: false
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      # Stop the workflow once we're 24h past the first recorded run.
+      # The first run writes .first_run_at; subsequent runs read it.
+      - name: Check 1-day window
+        id: window
+        run: |
+          set -euo pipefail
+          NOW_TS=$(date -u +%s)
+          if [ -f .first_run_at ]; then
+            START_TS=$(cat .first_run_at)
+          else
+            START_TS=$NOW_TS
+            echo "$NOW_TS" > .first_run_at
+            echo "Recorded first-run timestamp: $NOW_TS"
+          fi
+          ELAPSED=$(( NOW_TS - START_TS ))
+          echo "elapsed_seconds=$ELAPSED" >> "$GITHUB_OUTPUT"
+          # 86400s = 1 day
+          if [ "$ELAPSED" -ge 86400 ]; then
+            echo "expired=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "expired=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Disable workflow (window elapsed) and exit
+        if: steps.window.outputs.expired == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "1-day window elapsed (${{ steps.window.outputs.elapsed_seconds }}s). Disabling workflow."
+          gh workflow disable "${{ github.workflow }}" --repo "${{ github.repository }}" || true
+          exit 0
+
+      - name: Set up Python
+        if: steps.window.outputs.expired != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        if: steps.window.outputs.expired != 'true'
+        run: pip install -r requirements.txt
+
+      - name: Run tracker
+        if: steps.window.outputs.expired != 'true'
+        env:
+          TRACK_URL: ${{ secrets.TRACK_URL }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: python track.py
+
+      - name: Commit state changes
+        if: steps.window.outputs.expired != 'true'
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add last_time.json .first_run_at 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "No state changes to commit."
+          else
+            git commit -m "chore: update tracker state [skip ci]"
+            git push
+          fi
