@@ -119,6 +119,31 @@ def send_email(subject: str, text_body: str, html_body: str) -> None:
     log.info("Sent email to %s: %s", user, subject)
 
 
+def send_sms(short_text: str) -> None:
+    """Optionally text a short alert via a carrier email-to-SMS gateway.
+
+    No-op unless SMS_TO is set (e.g. "5551234567@tmomail.net" for Mint/T-Mobile).
+    SMS truncates hard, so this sends one short text-only line, not the full log.
+    """
+    sms_to = os.environ.get("SMS_TO")
+    if not sms_to:
+        return
+    user = os.environ["GMAIL_USER"]
+    pw = os.environ["GMAIL_APP_PASSWORD"]
+
+    msg = EmailMessage()
+    msg["From"] = user
+    msg["To"] = sms_to
+    msg["Subject"] = ""  # keep the message to a single line in the SMS body
+    msg.set_content(short_text)
+
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+        server.starttls()
+        server.login(user, pw)
+        server.send_message(msg)
+    log.info("Sent SMS to %s: %s", sms_to, short_text)
+
+
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -147,10 +172,11 @@ def main() -> int:
         subject = "LOCALE: new ETA"
         log.info("Time changed: %s -> %s. Sending email.", prev, scheduled)
 
-    # First run or a change: append to the log and email the full log.
+    # First run or a change: append to the log, email the full log, and text a short line.
     history.append({"checkedAt": now_iso, "eta": scheduled, "label": pretty})
     text_body, html_body = format_log(history)
     send_email(subject, text_body, html_body)
+    send_sms(f"{subject} — {pretty}")
 
     save_state(scheduled, history, now_iso)
     return 0
