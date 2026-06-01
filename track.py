@@ -27,6 +27,8 @@ STATE_FILE = Path(os.environ.get("STATE_FILE") or (Path(__file__).parent / "last
 DISPLAY_TZ = ZoneInfo("America/Los_Angeles")
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 587
+# Only alert when the ETA moves at least this many minutes vs. the last alert.
+ALERT_THRESHOLD_MIN = int(os.environ.get("ALERT_THRESHOLD_MIN", "5"))
 INIT_DATA_RE = re.compile(r'window\.INIT_DATA\s*=\s*JSON\.parse\(window\.atob\("([^"]+)"\)\)')
 
 
@@ -66,16 +68,23 @@ def load_state() -> dict:
         return {}
 
 
-def save_state(monitored: str, monitored_label: str, history: list[dict],
-               checks: list[dict], now_iso: str) -> None:
+def minute_of(iso_utc: str) -> datetime:
+    """Truncate an ISO timestamp to the minute (drops second-level jitter)."""
+    return datetime.fromisoformat(iso_utc.replace("Z", "+00:00")).replace(second=0, microsecond=0)
+
+
+def save_state(monitored: str, monitored_label: str, last_alerted: str,
+               history: list[dict], checks: list[dict], now_iso: str) -> None:
     # Deliberately does NOT store the tracking URL: the state file is committed to a
     # public repo, and the URL is a secret.
-    # - monitoredLabel: displayed minute used for change detection (ignores second-level jitter)
+    # - lastAlerted: the eta that triggered the last alert (threshold is measured from this)
+    # - monitoredLabel: most recent displayed minute (for readability)
     # - history: change-only log (what the emails show)
     # - checks:  EVERY poll, for verification/debugging
     STATE_FILE.write_text(json.dumps({
         "monitored": monitored,
         "monitoredLabel": monitored_label,
+        "lastAlerted": last_alerted,
         "checkedAt": now_iso,
         "history": history,
         "checks": checks,
@@ -169,33 +178,37 @@ def main() -> int:
     log.info("Arrival ETA: %s  (eta=%s scheduledAt=%s)", pretty, eta, scheduled)
 
     state = load_state()
-    # Compare on the *displayed* minute (e.g. "Today at 2:35 PM"), not the raw eta:
-    # the live eta jitters by seconds, which would otherwise spam alerts.
-    prev = state.get("monitoredLabel")
+    # Alerts are measured against the eta that triggered the *last alert*, so small
+    # second/minute jitter in the live eta doesn't spam: only moves of at least
+    # ALERT_THRESHOLD_MIN minutes notify.
+    last_alerted = state.get("lastAlerted")
     history = state.get("history", [])
     checks = state.get("checks", [])
 
     # Verification log: record EVERY poll, whether or not anything changed.
     checks.append({"checkedAt": now_iso, "eta": eta, "scheduledAt": scheduled, "label": pretty})
 
-    if prev is None:
+    if last_alerted is None:
         subject = "LOCALE: ETA"
         log.info("First run — emailing the ETA.")
-    elif prev == pretty:
-        log.info("No change since last check (%s). Logged poll #%d.", prev, len(checks))
-        save_state(monitored, pretty, history, checks, now_iso)
-        return 0
     else:
+        delta_min = abs((minute_of(monitored) - minute_of(last_alerted)).total_seconds()) / 60
+        if delta_min < ALERT_THRESHOLD_MIN:
+            log.info("ETA within threshold (moved %.0f < %d min). No alert. Logged poll #%d.",
+                     delta_min, ALERT_THRESHOLD_MIN, len(checks))
+            save_state(monitored, pretty, last_alerted, history, checks, now_iso)
+            return 0
         subject = "LOCALE: new ETA"
-        log.info("ETA changed: %s -> %s. Sending email.", prev, pretty)
+        log.info("ETA moved %.0f min (>= %d): %s -> %s. Sending email.",
+                 delta_min, ALERT_THRESHOLD_MIN, humanize(last_alerted), pretty)
 
-    # First run or a change: append to the change log, email it, and text a short line.
+    # First run or a threshold-crossing change: log it, email it, text a short line.
     history.append({"checkedAt": now_iso, "eta": monitored, "label": pretty})
     text_body, html_body = format_log(history)
     send_email(subject, text_body, html_body)
     send_sms(f"{subject} — {pretty}")
 
-    save_state(monitored, pretty, history, checks, now_iso)
+    save_state(monitored, pretty, monitored, history, checks, now_iso)
     return 0
 
 
