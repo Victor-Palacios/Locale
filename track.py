@@ -21,7 +21,9 @@ import requests
 
 log = logging.getLogger("locale-tracker")
 
-STATE_FILE = Path(__file__).parent / "last_time.json"
+# State path is overridable so a local cron runner can use its own file and not
+# clobber the git-tracked state the GitHub Action commits.
+STATE_FILE = Path(os.environ.get("STATE_FILE") or (Path(__file__).parent / "last_time.json"))
 DISPLAY_TZ = ZoneInfo("America/Los_Angeles")
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 587
