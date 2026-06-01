@@ -74,39 +74,56 @@ def save_last(iso_utc: str) -> None:
     }, indent=2) + "\n")
 
 
-def send_change_email(prev: str, curr: str, url: str) -> None:
+def send_email(subject: str, text_body: str, html_body: str) -> None:
+    """Send via Gmail SMTP. Sender and receiver are both the authenticated account."""
     user = os.environ["GMAIL_USER"]
     pw = os.environ["GMAIL_APP_PASSWORD"]
-    recipient = os.environ.get("RECIPIENT", user)
-
-    prev_h, curr_h = humanize(prev), humanize(curr)
-    subject = f"[Locale] Arrival time changed: {prev_h} -> {curr_h}"
 
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = user
-    msg["To"] = recipient
-    msg.set_content(
-        f"Scheduled time of arrival changed.\n\n"
-        f"Previous: {prev_h}  ({prev})\n"
-        f"Current:  {curr_h}  ({curr})\n\n"
-        f"Tracking page: {url}\n"
-    )
-    msg.add_alternative(
-        f"<html><body style='font-family:-apple-system,sans-serif;line-height:1.5'>"
-        f"<h2>Scheduled time of arrival changed</h2>"
-        f"<p><b>Previous:</b> {prev_h} <span style='color:#888'>({prev})</span><br>"
-        f"<b>Current:</b> {curr_h} <span style='color:#888'>({curr})</span></p>"
-        f"<p><a href='{url}'>View tracking page</a></p>"
-        f"</body></html>",
-        subtype="html",
-    )
+    msg["To"] = user  # sender and receiver are both me
+    msg.set_content(text_body)
+    msg.add_alternative(html_body, subtype="html")
 
     with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
         server.starttls()
         server.login(user, pw)
         server.send_message(msg)
-    log.info("Sent change-notification email to %s", recipient)
+    log.info("Sent email to %s: %s", user, subject)
+
+
+def send_first_email(curr: str, pretty: str) -> None:
+    # First email: the subject is just the ETA itself.
+    send_email(
+        subject=pretty,
+        text_body=f"Scheduled time of arrival: {pretty}  ({curr})\n",
+        html_body=(
+            f"<html><body style='font-family:-apple-system,sans-serif;line-height:1.5'>"
+            f"<h2>Scheduled time of arrival</h2>"
+            f"<p>{pretty} <span style='color:#888'>({curr})</span></p>"
+            f"</body></html>"
+        ),
+    )
+
+
+def send_change_email(prev: str, curr: str) -> None:
+    prev_h, curr_h = humanize(prev), humanize(curr)
+    send_email(
+        subject="LOCALE: new ETA",
+        text_body=(
+            f"Scheduled time of arrival changed.\n\n"
+            f"Previous: {prev_h}  ({prev})\n"
+            f"Current:  {curr_h}  ({curr})\n"
+        ),
+        html_body=(
+            f"<html><body style='font-family:-apple-system,sans-serif;line-height:1.5'>"
+            f"<h2>New ETA</h2>"
+            f"<p><b>Previous:</b> {prev_h} <span style='color:#888'>({prev})</span><br>"
+            f"<b>Current:</b> {curr_h} <span style='color:#888'>({curr})</span></p>"
+            f"</body></html>"
+        ),
+    )
 
 
 def main() -> int:
@@ -123,12 +140,13 @@ def main() -> int:
 
     prev = load_last()
     if prev is None:
-        log.info("First run — recording baseline, no email sent.")
+        log.info("First run — emailing the ETA.")
+        send_first_email(scheduled, pretty)
     elif prev == scheduled:
         log.info("No change since last check (%s).", prev)
     else:
         log.info("Time changed: %s -> %s. Sending email.", prev, scheduled)
-        send_change_email(prev, scheduled, url)
+        send_change_email(prev, scheduled)
 
     save_last(scheduled)
     return 0
