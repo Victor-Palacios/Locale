@@ -2,7 +2,7 @@
 
 Polls an [order.is](http://order.is) tracking page every 20 minutes and emails
 when the **Scheduled time of arrival** changes. Runs as a GitHub Action and
-auto-disables itself 24 hours after the first run.
+auto-disables itself ~9 hours after the first run.
 
 ## Local run
 
@@ -27,7 +27,7 @@ compares against that file and emails on change.
    - `GMAIL_USER` and `GMAIL_APP_PASSWORD`.
 3. The workflow at `.github/workflows/track.yml` runs every 20 min on the
    default branch. Trigger it once via **Run workflow** to lay down the
-   `.first_run_at` timestamp; it then auto-disables ~24h later.
+   `.first_run_at` timestamp; it then auto-disables ~9h later.
 
 When the link rotates next week, update the `TRACK_URL` repo secret and
 re-enable the workflow (Actions → Track scheduled arrival time → Enable).

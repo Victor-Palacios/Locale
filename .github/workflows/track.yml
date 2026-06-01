@@ -22,9 +22,9 @@ jobs:
       - name: Check out repo
         uses: actions/checkout@v4
 
-      # Stop the workflow once we're 24h past the first recorded run.
+      # Stop the workflow once we're ~9h past the first recorded run.
       # The first run writes .first_run_at; subsequent runs read it.
-      - name: Check 1-day window
+      - name: Check 9-hour window
         id: window
         run: |
           set -euo pipefail
@@ -38,8 +38,8 @@ jobs:
           fi
           ELAPSED=$(( NOW_TS - START_TS ))
           echo "elapsed_seconds=$ELAPSED" >> "$GITHUB_OUTPUT"
-          # 86400s = 1 day
-          if [ "$ELAPSED" -ge 86400 ]; then
+          # 32400s = 9 hours
+          if [ "$ELAPSED" -ge 32400 ]; then
             echo "expired=true" >> "$GITHUB_OUTPUT"
           else
             echo "expired=false" >> "$GITHUB_OUTPUT"
@@ -50,7 +50,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "1-day window elapsed (${{ steps.window.outputs.elapsed_seconds }}s). Disabling workflow."
+          echo "9-hour window elapsed (${{ steps.window.outputs.elapsed_seconds }}s). Disabling workflow."
           gh workflow disable "${{ github.workflow }}" --repo "${{ github.repository }}" || true
           exit 0
 
