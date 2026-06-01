@@ -28,8 +28,8 @@ SMTP_PORT = 587
 INIT_DATA_RE = re.compile(r'window\.INIT_DATA\s*=\s*JSON\.parse\(window\.atob\("([^"]+)"\)\)')
 
 
-def fetch_scheduled_time(url: str) -> tuple[str, dict]:
-    """Return (ISO-8601 UTC timestamp, full order dict) for the order behind `url`."""
+def fetch_order(url: str) -> dict:
+    """Return the full order dict (with `eta` and `scheduledAt`) for the order behind `url`."""
     resp = requests.get(url, timeout=30, headers={"User-Agent": "Mozilla/5.0 (locale-tracker)"})
     resp.raise_for_status()
     m = INIT_DATA_RE.search(resp.text)
@@ -37,10 +37,9 @@ def fetch_scheduled_time(url: str) -> tuple[str, dict]:
         raise RuntimeError("INIT_DATA blob not found in page HTML")
     payload = json.loads(base64.b64decode(m.group(1)).decode("utf-8"))
     order = payload.get("order") or {}
-    scheduled = order.get("scheduledAt") or order.get("eta")
-    if not scheduled:
-        raise RuntimeError(f"No scheduledAt/eta in payload: {order!r}")
-    return scheduled, order
+    if not (order.get("eta") or order.get("scheduledAt")):
+        raise RuntimeError(f"No eta/scheduledAt in payload: {order!r}")
+    return order
 
 
 def humanize(iso_utc: str) -> str:
@@ -65,13 +64,16 @@ def load_state() -> dict:
         return {}
 
 
-def save_state(scheduled: str, history: list[dict], now_iso: str) -> None:
+def save_state(monitored: str, history: list[dict], checks: list[dict], now_iso: str) -> None:
     # Deliberately does NOT store the tracking URL: the state file is committed to a
     # public repo, and the URL is a secret.
+    # - history: change-only log (what the emails show)
+    # - checks:  EVERY poll, for verification/debugging
     STATE_FILE.write_text(json.dumps({
-        "scheduledAt": scheduled,
+        "monitored": monitored,
         "checkedAt": now_iso,
         "history": history,
+        "checks": checks,
     }, indent=2) + "\n")
 
 
@@ -152,33 +154,41 @@ def main() -> int:
         log.error("TRACK_URL env var is required")
         return 2
 
-    scheduled, _order = fetch_scheduled_time(url)
-    pretty = humanize(scheduled)
+    order = fetch_order(url)
+    # The live, "Updated live" arrival time is `eta`; `scheduledAt` is the fixed slot.
+    eta = order.get("eta")
+    scheduled = order.get("scheduledAt")
+    monitored = eta or scheduled
+    pretty = humanize(monitored)
     now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    log.info("Scheduled time of arrival: %s  (raw: %s)", pretty, scheduled)
+    log.info("Arrival ETA: %s  (eta=%s scheduledAt=%s)", pretty, eta, scheduled)
 
     state = load_state()
-    prev = state.get("scheduledAt")
+    prev = state.get("monitored")
     history = state.get("history", [])
+    checks = state.get("checks", [])
+
+    # Verification log: record EVERY poll, whether or not anything changed.
+    checks.append({"checkedAt": now_iso, "eta": eta, "scheduledAt": scheduled, "label": pretty})
 
     if prev is None:
         subject = "LOCALE: ETA"
         log.info("First run — emailing the ETA.")
-    elif prev == scheduled:
-        log.info("No change since last check (%s).", prev)
-        save_state(scheduled, history, now_iso)
+    elif prev == monitored:
+        log.info("No change since last check (%s). Logged poll #%d.", prev, len(checks))
+        save_state(monitored, history, checks, now_iso)
         return 0
     else:
         subject = "LOCALE: new ETA"
-        log.info("Time changed: %s -> %s. Sending email.", prev, scheduled)
+        log.info("ETA changed: %s -> %s. Sending email.", prev, monitored)
 
-    # First run or a change: append to the log, email the full log, and text a short line.
-    history.append({"checkedAt": now_iso, "eta": scheduled, "label": pretty})
+    # First run or a change: append to the change log, email it, and text a short line.
+    history.append({"checkedAt": now_iso, "eta": monitored, "label": pretty})
     text_body, html_body = format_log(history)
     send_email(subject, text_body, html_body)
     send_sms(f"{subject} — {pretty}")
 
-    save_state(scheduled, history, now_iso)
+    save_state(monitored, history, checks, now_iso)
     return 0
 
 

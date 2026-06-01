@@ -2,8 +2,8 @@ name: Track scheduled arrival time
 
 on:
   schedule:
-    # Every 20 minutes
-    - cron: "*/20 * * * *"
+    # Every 20 minutes, offset off the contended :00/:20/:40 slots for reliability.
+    - cron: "8,28,48 * * * *"
   workflow_dispatch: {}
 
 # Allow the workflow to commit the updated state file and to disable itself.
