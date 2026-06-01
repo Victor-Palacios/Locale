@@ -56,22 +56,48 @@ def humanize(iso_utc: str) -> str:
     return f"{day} at {dt.strftime('%-I:%M %p')}"
 
 
-def load_last() -> str | None:
+def load_state() -> dict:
     if not STATE_FILE.exists():
-        return None
+        return {}
     try:
-        return json.loads(STATE_FILE.read_text()).get("scheduledAt")
+        return json.loads(STATE_FILE.read_text())
     except Exception:
-        return None
+        return {}
 
 
-def save_last(iso_utc: str) -> None:
+def save_state(scheduled: str, history: list[dict], now_iso: str) -> None:
     # Deliberately does NOT store the tracking URL: the state file is committed to a
     # public repo, and the URL is a secret.
     STATE_FILE.write_text(json.dumps({
-        "scheduledAt": iso_utc,
-        "checkedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "scheduledAt": scheduled,
+        "checkedAt": now_iso,
+        "history": history,
     }, indent=2) + "\n")
+
+
+def format_log(history: list[dict]) -> tuple[str, str]:
+    """Render the running log of observed ETAs as (plain text, html)."""
+    text_lines, html_rows = [], []
+    for h in history:
+        checked = (
+            datetime.fromisoformat(h["checkedAt"])
+            .astimezone(DISPLAY_TZ)
+            .strftime("%Y-%m-%d %-I:%M %p %Z")
+        )
+        text_lines.append(f"{checked}   ->   {h['label']}   ({h['eta']})")
+        html_rows.append(
+            f"<tr><td style='padding:2px 16px 2px 0;color:#888'>{checked}</td>"
+            f"<td style='padding:2px 0'><b>{h['label']}</b> "
+            f"<span style='color:#888'>({h['eta']})</span></td></tr>"
+        )
+    text = "ETA log (each entry = an observed time):\n\n" + "\n".join(text_lines) + "\n"
+    html = (
+        "<html><body style='font-family:-apple-system,sans-serif;line-height:1.5'>"
+        "<h2>ETA log</h2><table style='border-collapse:collapse'>"
+        + "".join(html_rows)
+        + "</table></body></html>"
+    )
+    return text, html
 
 
 def send_email(subject: str, text_body: str, html_body: str) -> None:
@@ -93,39 +119,6 @@ def send_email(subject: str, text_body: str, html_body: str) -> None:
     log.info("Sent email to %s: %s", user, subject)
 
 
-def send_first_email(curr: str, pretty: str) -> None:
-    # First email: the subject is just the ETA itself.
-    send_email(
-        subject=pretty,
-        text_body=f"Scheduled time of arrival: {pretty}  ({curr})\n",
-        html_body=(
-            f"<html><body style='font-family:-apple-system,sans-serif;line-height:1.5'>"
-            f"<h2>Scheduled time of arrival</h2>"
-            f"<p>{pretty} <span style='color:#888'>({curr})</span></p>"
-            f"</body></html>"
-        ),
-    )
-
-
-def send_change_email(prev: str, curr: str) -> None:
-    prev_h, curr_h = humanize(prev), humanize(curr)
-    send_email(
-        subject="LOCALE: new ETA",
-        text_body=(
-            f"Scheduled time of arrival changed.\n\n"
-            f"Previous: {prev_h}  ({prev})\n"
-            f"Current:  {curr_h}  ({curr})\n"
-        ),
-        html_body=(
-            f"<html><body style='font-family:-apple-system,sans-serif;line-height:1.5'>"
-            f"<h2>New ETA</h2>"
-            f"<p><b>Previous:</b> {prev_h} <span style='color:#888'>({prev})</span><br>"
-            f"<b>Current:</b> {curr_h} <span style='color:#888'>({curr})</span></p>"
-            f"</body></html>"
-        ),
-    )
-
-
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -136,19 +129,30 @@ def main() -> int:
 
     scheduled, _order = fetch_scheduled_time(url)
     pretty = humanize(scheduled)
+    now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
     log.info("Scheduled time of arrival: %s  (raw: %s)", pretty, scheduled)
 
-    prev = load_last()
+    state = load_state()
+    prev = state.get("scheduledAt")
+    history = state.get("history", [])
+
     if prev is None:
+        subject = "LOCALE: ETA"
         log.info("First run — emailing the ETA.")
-        send_first_email(scheduled, pretty)
     elif prev == scheduled:
         log.info("No change since last check (%s).", prev)
+        save_state(scheduled, history, now_iso)
+        return 0
     else:
+        subject = "LOCALE: new ETA"
         log.info("Time changed: %s -> %s. Sending email.", prev, scheduled)
-        send_change_email(prev, scheduled)
 
-    save_last(scheduled)
+    # First run or a change: append to the log and email the full log.
+    history.append({"checkedAt": now_iso, "eta": scheduled, "label": pretty})
+    text_body, html_body = format_log(history)
+    send_email(subject, text_body, html_body)
+
+    save_state(scheduled, history, now_iso)
     return 0
 
 
