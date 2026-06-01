@@ -64,13 +64,16 @@ def load_state() -> dict:
         return {}
 
 
-def save_state(monitored: str, history: list[dict], checks: list[dict], now_iso: str) -> None:
+def save_state(monitored: str, monitored_label: str, history: list[dict],
+               checks: list[dict], now_iso: str) -> None:
     # Deliberately does NOT store the tracking URL: the state file is committed to a
     # public repo, and the URL is a secret.
+    # - monitoredLabel: displayed minute used for change detection (ignores second-level jitter)
     # - history: change-only log (what the emails show)
     # - checks:  EVERY poll, for verification/debugging
     STATE_FILE.write_text(json.dumps({
         "monitored": monitored,
+        "monitoredLabel": monitored_label,
         "checkedAt": now_iso,
         "history": history,
         "checks": checks,
@@ -164,7 +167,9 @@ def main() -> int:
     log.info("Arrival ETA: %s  (eta=%s scheduledAt=%s)", pretty, eta, scheduled)
 
     state = load_state()
-    prev = state.get("monitored")
+    # Compare on the *displayed* minute (e.g. "Today at 2:35 PM"), not the raw eta:
+    # the live eta jitters by seconds, which would otherwise spam alerts.
+    prev = state.get("monitoredLabel")
     history = state.get("history", [])
     checks = state.get("checks", [])
 
@@ -174,13 +179,13 @@ def main() -> int:
     if prev is None:
         subject = "LOCALE: ETA"
         log.info("First run — emailing the ETA.")
-    elif prev == monitored:
+    elif prev == pretty:
         log.info("No change since last check (%s). Logged poll #%d.", prev, len(checks))
-        save_state(monitored, history, checks, now_iso)
+        save_state(monitored, pretty, history, checks, now_iso)
         return 0
     else:
         subject = "LOCALE: new ETA"
-        log.info("ETA changed: %s -> %s. Sending email.", prev, monitored)
+        log.info("ETA changed: %s -> %s. Sending email.", prev, pretty)
 
     # First run or a change: append to the change log, email it, and text a short line.
     history.append({"checkedAt": now_iso, "eta": monitored, "label": pretty})
@@ -188,7 +193,7 @@ def main() -> int:
     send_email(subject, text_body, html_body)
     send_sms(f"{subject} — {pretty}")
 
-    save_state(monitored, history, checks, now_iso)
+    save_state(monitored, pretty, history, checks, now_iso)
     return 0
 
 
