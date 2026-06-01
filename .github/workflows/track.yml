@@ -2,8 +2,9 @@ name: Track scheduled arrival time
 
 on:
   schedule:
-    # Every 20 minutes, offset off the contended :00/:20/:40 slots for reliability.
-    - cron: "8,28,48 * * * *"
+    # Every 5 minutes. GitHub's scheduler is best-effort and drops/delays ticks,
+    # so we over-request to get effective coverage closer to every ~20 min.
+    - cron: "*/5 * * * *"
   workflow_dispatch: {}
 
 # Allow the workflow to commit the updated state file and to disable itself.
@@ -85,5 +86,14 @@ jobs:
             echo "No state changes to commit."
           else
             git commit -m "chore: update tracker state [skip ci]"
-            git push
+            # Rebase-and-retry so a racing push (manual or another run) can't fail us.
+            for i in 1 2 3 4 5; do
+              if git push; then
+                echo "Pushed on attempt $i."
+                break
+              fi
+              echo "Push failed (attempt $i); rebasing onto latest and retrying."
+              git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
+              sleep 3
+            done
           fi
